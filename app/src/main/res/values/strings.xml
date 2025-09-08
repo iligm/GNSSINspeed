@@ -1,3 +1,5 @@
 <resources>
     <string name="app_name">GNSS-IN-speed</string>
+    <string name="notif_channel_name">Speed Monitor</string>
+    <string name="notif_title">Велоскорость-контроль</string>
 </resources>

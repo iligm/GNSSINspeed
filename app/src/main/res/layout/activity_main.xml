@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+              android:orientation="vertical"
+              android:padding="24dp"
+              android:gravity="center"
+              android:layout_width="match_parent"
+              android:layout_height="match_parent">
+
+    <TextView
+        android:id="@+id/tvSpeed"
+        android:text="0.0 км/ч"
+        android:textSize="48sp"
+        android:textStyle="bold"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"/>
+
+    <!-- Статус GPS -->
+    <TextView
+        android:id="@+id/tvGpsStatus"
+        android:text="GPS: Не активен"
+        android:textSize="16sp"
+        android:textColor="#666666"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"/>
+
+    <!-- Время поиска GPS -->
+    <TextView
+        android:id="@+id/tvSearchTime"
+        android:text="Время поиска: --"
+        android:textSize="14sp"
+        android:textColor="#888888"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"/>
+
+    <!-- Точность GPS -->
+    <TextView
+        android:id="@+id/tvAccuracy"
+        android:text="Точность: --"
+        android:textSize="14sp"
+        android:textColor="#888888"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"/>
+
+    <!-- Количество спутников -->
+    <TextView
+        android:id="@+id/tvSatellites"
+        android:text="Спутники: --"
+        android:textSize="14sp"
+        android:textColor="#888888"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"/>
+
+    <SeekBar
+        android:id="@+id/limitSeek"
+        android:layout_marginTop="24dp"
+        android:max="60"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"/>
+
+    <TextView
+        android:id="@+id/tvLimit"
+        android:text="Лимит: 25 км/ч"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"/>
+
+    <Button
+        android:id="@+id/btnToggle"
+        android:text="Старт"
+        android:layout_marginTop="24dp"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"/>
+    </LinearLayout>

@@ -19,3 +19,6 @@
 # If you keep the line number information, uncomment this to
 # hide the original source file name.
 #-renamesourcefileattribute SourceFile
+
+# чтобы R8 не удалил наши классы
+-keep class org.iligm.ginspeedwarning.** { *; }
