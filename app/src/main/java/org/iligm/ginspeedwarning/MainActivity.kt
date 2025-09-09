@@ -54,9 +54,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun hasLocationPerms(): Boolean {
-        val fine = checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
-        val coarse = checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
-        return fine || coarse
+        return checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -91,8 +89,7 @@ class MainActivity : AppCompatActivity() {
                 if (!hasLocationPerms()) {
                     // если ещё не дали разрешение → запросим и выйдем
                     permLauncher.launch(arrayOf(
-                        Manifest.permission.ACCESS_FINE_LOCATION,
-                        Manifest.permission.ACCESS_COARSE_LOCATION
+                        Manifest.permission.ACCESS_FINE_LOCATION
                     ))
                     return@setOnClickListener
                 }
@@ -110,8 +107,8 @@ class MainActivity : AppCompatActivity() {
                 vb.btnToggle.text = "Стоп"
                 
                 // Сбрасываем все поля при запуске
-                vb.tvSpeed.text = "Получение GPS..."
-                vb.tvGpsStatus.text = "Запуск сервиса..."
+                vb.tvSpeed.text = "Поиск GPS..."
+                vb.tvGpsStatus.text = "Запуск GPS сервиса..."
                 vb.tvGpsStatus.setTextColor(0xFF666666.toInt())
                 vb.tvSearchTime.text = "Время поиска: 0с"
                 vb.tvAccuracy.text = "Точность: --"
@@ -126,7 +123,7 @@ class MainActivity : AppCompatActivity() {
                     if (SpeedService.isRunning) {
                         Log.d("MainActivity", "Сервис запущен успешно")
                         // Если за 2 секунды не получили ни одного broadcast, используем статические переменные
-                        if (vb.tvGpsStatus.text == "Запуск сервиса...") {
+                        if (vb.tvGpsStatus.text == "Запуск GPS сервиса...") {
                             Log.w("MainActivity", "Не получаем broadcast от сервиса! Используем статические переменные")
                             updateFromStaticVariables()
                         }
@@ -146,22 +143,16 @@ class MainActivity : AppCompatActivity() {
     private fun updateSpeedDisplay(speed: Double, accuracy: Float, satellites: Int, searchTime: Long, provider: String = "Неизвестно") {
         vb.tvSpeed.text = "%.1f км/ч".format(speed)
         
-        // Обновляем точность GPS с информацией о провайдере
+        // Обновляем точность GPS
         if (accuracy > 0) {
             val accuracyText = when {
                 accuracy <= 3 -> "Отличная (±${accuracy.toInt()}м)"
                 accuracy <= 8 -> "Хорошая (±${accuracy.toInt()}м)"
-                accuracy <= 20 -> "Средняя (±${accuracy.toInt()}м)"
-                accuracy <= 50 -> "Низкая (±${accuracy.toInt()}м)"
-                else -> "Очень низкая (±${accuracy.toInt()}м)"
+                accuracy <= 15 -> "Средняя (±${accuracy.toInt()}м)"
+                accuracy <= 20 -> "Приемлемая (±${accuracy.toInt()}м)"
+                else -> "Низкая (±${accuracy.toInt()}м)"
             }
-            val providerText = when (provider) {
-                "gps" -> "GPS"
-                "network" -> "Сеть"
-                "passive" -> "Пассивный"
-                else -> provider
-            }
-            vb.tvAccuracy.text = "Точность: $accuracyText ($providerText)"
+            vb.tvAccuracy.text = "Точность: $accuracyText (GPS)"
         }
         
         // Обновляем количество спутников
@@ -225,7 +216,6 @@ class MainActivity : AppCompatActivity() {
     private fun requestPermsIfNeeded() {
         val perms = buildList {
             add(Manifest.permission.ACCESS_FINE_LOCATION)
-            add(Manifest.permission.ACCESS_COARSE_LOCATION)
             if (Build.VERSION.SDK_INT >= 33) add(Manifest.permission.POST_NOTIFICATIONS)
         }.toTypedArray()
 
@@ -267,11 +257,13 @@ class MainActivity : AppCompatActivity() {
         vb.tvSearchTime.text = "Время поиска: ${SpeedService.lastSearchTime / 1000}с"
         if (SpeedService.lastAccuracy > 0) {
             val accuracyText = when {
-                SpeedService.lastAccuracy <= 5 -> "Отличная (±${SpeedService.lastAccuracy.toInt()}м)"
-                SpeedService.lastAccuracy <= 15 -> "Хорошая (±${SpeedService.lastAccuracy.toInt()}м)"
+                SpeedService.lastAccuracy <= 3 -> "Отличная (±${SpeedService.lastAccuracy.toInt()}м)"
+                SpeedService.lastAccuracy <= 8 -> "Хорошая (±${SpeedService.lastAccuracy.toInt()}м)"
+                SpeedService.lastAccuracy <= 15 -> "Средняя (±${SpeedService.lastAccuracy.toInt()}м)"
+                SpeedService.lastAccuracy <= 20 -> "Приемлемая (±${SpeedService.lastAccuracy.toInt()}м)"
                 else -> "Низкая (±${SpeedService.lastAccuracy.toInt()}м)"
             }
-            vb.tvAccuracy.text = "Точность: $accuracyText"
+            vb.tvAccuracy.text = "Точность: $accuracyText (GPS)"
         }
     }
 }

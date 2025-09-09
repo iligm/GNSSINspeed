@@ -55,13 +55,27 @@ class SpeedService : Service() {
             
             Log.d("SpeedService", "Получено местоположение от $provider: точность ${acc}м, скорость ${vRaw}км/ч")
             
+            // Проверяем, что это GPS и точность достаточна
+            if (provider != LocationManager.GPS_PROVIDER) {
+                Log.w("SpeedService", "Игнорируем местоположение от $provider - используем только GPS")
+                return
+            }
+            
+            // Минимальная точность для отображения скорости - 20 метров
+            val minAccuracy = 20f
+            if (acc > minAccuracy) {
+                Log.d("SpeedService", "Точность GPS недостаточна: ${acc}м > ${minAccuracy}м, продолжаем поиск")
+                sendGpsStatusUpdate("Поиск точного GPS... (±${acc.toInt()}м)", false)
+                return
+            }
+            
             // Более агрессивная фильтрация для быстрого отклика
             val alpha = when {
                 acc <= 3   -> 0.9  // Отличная точность - почти полностью доверяем
                 acc <= 8   -> 0.8  // Хорошая точность
-                acc <= 20  -> 0.6  // Средняя точность
-                acc <= 50  -> 0.4  // Низкая точность
-                else       -> 0.2  // Очень низкая точность
+                acc <= 15  -> 0.7  // Средняя точность
+                acc <= 20  -> 0.6  // Приемлемая точность
+                else       -> 0.4  // Минимальная точность
             }
             
             val v = alpha * vRaw + (1 - alpha) * lastSpeed
@@ -71,14 +85,8 @@ class SpeedService : Service() {
             SpeedService.lastSpeed = v
             SpeedService.lastAccuracy = acc
 
-            // Обновляем уведомление с информацией о провайдере
-            val providerText = when (provider) {
-                LocationManager.GPS_PROVIDER -> "GPS"
-                LocationManager.NETWORK_PROVIDER -> "Сеть"
-                LocationManager.PASSIVE_PROVIDER -> "Пассивный"
-                else -> provider
-            }
-            updateNotification("Скорость: %.1f км/ч ($providerText)".format(Locale.getDefault(), v))
+            // Обновляем уведомление
+            updateNotification("Скорость: %.1f км/ч (GPS ±${acc.toInt()}м)".format(Locale.getDefault(), v))
             maybeAlert(v)
             
             // Отправляем broadcast с обновленной скоростью
@@ -93,8 +101,8 @@ class SpeedService : Service() {
             }
             sendBroadcast(intent)
             
-            // Отправляем статус GPS с информацией о провайдере
-            sendGpsStatusUpdate("GPS активен ($providerText)", true)
+            // Отправляем статус GPS
+            sendGpsStatusUpdate("GPS активен (±${acc.toInt()}м)", true)
         }
 
         @Deprecated("Deprecated in Android 30+, но нужен для совместимости с minSdk 24")
@@ -145,11 +153,11 @@ class SpeedService : Service() {
         }
 
         Log.d("SpeedService", "Запуск foreground сервиса")
-        startForeground(NOTIF_ID, buildNotification("Готов"))
+        startForeground(NOTIF_ID, buildNotification("GPS готов"))
         gpsSearchStartTime = System.currentTimeMillis()
         
         // Отправляем начальный статус сразу после создания сервиса
-        sendGpsStatusUpdate("Сервис запущен", false)
+        sendGpsStatusUpdate("GPS сервис запущен", false)
         
         // Запускаем периодическую отправку статуса
         startPeriodicStatusUpdates()
@@ -160,112 +168,74 @@ class SpeedService : Service() {
     private fun requestLocation() {
         Log.d("SpeedService", "requestLocation() вызван")
         val fineLocation = checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION)
-        val coarseLocation = checkSelfPermission(android.Manifest.permission.ACCESS_COARSE_LOCATION)
         val backgroundLocation = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             checkSelfPermission(android.Manifest.permission.ACCESS_BACKGROUND_LOCATION)
         } else {
             PackageManager.PERMISSION_GRANTED
         }
         
-        Log.d("SpeedService", "Разрешения - FINE: $fineLocation, COARSE: $coarseLocation, BACKGROUND: $backgroundLocation")
+        Log.d("SpeedService", "Разрешения - FINE: $fineLocation, BACKGROUND: $backgroundLocation")
         
-        if (fineLocation == PackageManager.PERMISSION_GRANTED || coarseLocation == PackageManager.PERMISSION_GRANTED) {
+        if (fineLocation == PackageManager.PERMISSION_GRANTED) {
             Log.d("SpeedService", "Разрешение на GPS есть")
             
-            // Сначала пробуем получить последнее известное местоположение
+            // Сначала пробуем получить последнее известное местоположение только от GPS
             tryGetLastKnownLocation()
             
-            // Проверяем доступность провайдеров
+            // Проверяем доступность только GPS провайдера
             val gpsEnabled = lm.isProviderEnabled(LocationManager.GPS_PROVIDER)
-            val networkEnabled = lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER)
-            val passiveEnabled = lm.isProviderEnabled(LocationManager.PASSIVE_PROVIDER)
             
-            Log.d("SpeedService", "Провайдеры - GPS: $gpsEnabled, Network: $networkEnabled, Passive: $passiveEnabled")
+            Log.d("SpeedService", "GPS провайдер: $gpsEnabled")
             
-            if (gpsEnabled || networkEnabled) {
-                Log.d("SpeedService", "Запрашиваем обновления от всех доступных провайдеров")
-                sendGpsStatusUpdate("Поиск GPS...", false)
+            if (gpsEnabled) {
+                Log.d("SpeedService", "Запрашиваем обновления только от GPS")
+                sendGpsStatusUpdate("Поиск GPS сигнала...", false)
                 
                 try {
-                    // Запрашиваем обновления от GPS (приоритетный)
-                    if (gpsEnabled) {
-                        lm.requestLocationUpdates(
-                            LocationManager.GPS_PROVIDER,
-                            1000L,   // 1 секунда
-                            1f,      // 1 метр
-                            locListener,
-                            Looper.getMainLooper()
-                        )
-                        Log.d("SpeedService", "GPS обновления запрошены")
-                    }
+                    // Запрашиваем обновления только от GPS
+                    lm.requestLocationUpdates(
+                        LocationManager.GPS_PROVIDER,
+                        1000L,   // 1 секунда
+                        1f,      // 1 метр
+                        locListener,
+                        Looper.getMainLooper()
+                    )
+                    Log.d("SpeedService", "GPS обновления запрошены")
                     
-                    // Запрашиваем обновления от Network (быстрее, но менее точно)
-                    if (networkEnabled) {
-                        lm.requestLocationUpdates(
-                            LocationManager.NETWORK_PROVIDER,
-                            2000L,   // 2 секунды
-                            10f,     // 10 метров
-                            locListener,
-                            Looper.getMainLooper()
-                        )
-                        Log.d("SpeedService", "Network обновления запрошены")
-                    }
-                    
-                    // Запрашиваем обновления от Passive (если доступен)
-                    if (passiveEnabled) {
-                        lm.requestLocationUpdates(
-                            LocationManager.PASSIVE_PROVIDER,
-                            5000L,   // 5 секунд
-                            50f,     // 50 метров
-                            locListener,
-                            Looper.getMainLooper()
-                        )
-                        Log.d("SpeedService", "Passive обновления запрошены")
-                    }
-                    
-                    Log.d("SpeedService", "Все обновления запрошены успешно")
                 } catch (e: SecurityException) {
                     Log.e("SpeedService", "Ошибка безопасности при запросе GPS", e)
-                    sendGpsStatusUpdate("Ошибка доступа к GPS", false)
+                    sendGpsStatusUpdate("Ошибка доступа к GPS - проверьте разрешения", false)
                 } catch (e: Exception) {
                     Log.e("SpeedService", "Ошибка при запросе GPS", e)
-                    sendGpsStatusUpdate("Ошибка GPS", false)
+                    sendGpsStatusUpdate("Ошибка GPS - проверьте настройки", false)
                 }
             } else {
-                Log.w("SpeedService", "Все провайдеры отключены")
-                sendGpsStatusUpdate("GPS отключен", false)
+                Log.w("SpeedService", "GPS провайдер отключен")
+                sendGpsStatusUpdate("GPS отключен - включите GPS в настройках", false)
             }
         } else {
             Log.w("SpeedService", "Нет разрешения на GPS")
-            sendGpsStatusUpdate("Нет разрешения на GPS", false)
+            sendGpsStatusUpdate("Нет разрешения на GPS - предоставьте доступ", false)
         }
     }
     
     private fun tryGetLastKnownLocation() {
-        Log.d("SpeedService", "Пробуем получить последнее известное местоположение")
+        Log.d("SpeedService", "Пробуем получить последнее известное местоположение от GPS")
         try {
-            val providers = listOf(
-                LocationManager.GPS_PROVIDER,
-                LocationManager.NETWORK_PROVIDER,
-                LocationManager.PASSIVE_PROVIDER
-            )
-            
-            for (provider in providers) {
-                if (lm.isProviderEnabled(provider)) {
-                    val lastLocation = lm.getLastKnownLocation(provider)
-                    if (lastLocation != null) {
-                        Log.d("SpeedService", "Найдено последнее местоположение от $provider: ${lastLocation.latitude}, ${lastLocation.longitude}")
-                        // Используем последнее местоположение для быстрого старта
-                        locListener.onLocationChanged(lastLocation)
-                        return
-                    }
+            if (lm.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
+                val lastLocation = lm.getLastKnownLocation(LocationManager.GPS_PROVIDER)
+                if (lastLocation != null) {
+                    Log.d("SpeedService", "Найдено последнее GPS местоположение: ${lastLocation.latitude}, ${lastLocation.longitude}")
+                    // Используем последнее GPS местоположение для быстрого старта
+                    locListener.onLocationChanged(lastLocation)
+                    return
                 }
             }
-            Log.d("SpeedService", "Последнее местоположение не найдено")
+            Log.d("SpeedService", "Последнее GPS местоположение не найдено")
         } catch (e: SecurityException) {
-            Log.w("SpeedService", "Нет разрешения на получение последнего местоположения", e)
+            Log.w("SpeedService", "Нет разрешения на получение последнего GPS местоположения", e)
         } catch (e: Exception) {
-            Log.w("SpeedService", "Ошибка при получении последнего местоположения", e)
+            Log.w("SpeedService", "Ошибка при получении последнего GPS местоположения", e)
         }
     }
 
@@ -295,15 +265,16 @@ class SpeedService : Service() {
         statusUpdateRunnable = object : Runnable {
             override fun run() {
                 if (isRunning) {
+                    val searchTime = (System.currentTimeMillis() - gpsSearchStartTime) / 1000
                     val currentStatus = if (lastLocationTime > 0) {
                         "GPS активен (${(System.currentTimeMillis() - lastLocationTime) / 1000}с назад)"
                     } else {
-                        "Поиск GPS... (${(System.currentTimeMillis() - gpsSearchStartTime) / 1000}с)"
+                        "Поиск GPS сигнала... (${searchTime}с)"
                     }
                     sendGpsStatusUpdate(currentStatus, lastLocationTime > 0)
                     
                     // Если долго не получаем GPS, пробуем принудительно обновить
-                    if (lastLocationTime == 0L && (System.currentTimeMillis() - gpsSearchStartTime) > 10000) {
+                    if (lastLocationTime == 0L && searchTime > 10) {
                         Log.d("SpeedService", "Долго нет GPS, пробуем принудительное обновление")
                         tryGetLastKnownLocation()
                     }
