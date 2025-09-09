@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.app.*
 import android.content.*
 import android.content.pm.PackageManager
+import android.hardware.SensorManager
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
@@ -32,6 +33,7 @@ class SpeedService : Service() {
 
     private lateinit var nm: NotificationManager
     private lateinit var lm: LocationManager
+    private lateinit var sensorManager: SensorManager
 
     private var limitKmh = 25.0
     private var lastSpeed = 0.0
@@ -42,6 +44,14 @@ class SpeedService : Service() {
     private var satellitesCount = 0
     private var statusUpdateHandler: android.os.Handler? = null
     private var statusUpdateRunnable: Runnable? = null
+
+    // Фильтр Калмана и сенсоры
+    private lateinit var speedKF: SpeedKF
+    private lateinit var sensorProcessor: SensorProcessor
+    private lateinit var zuptDetector: ZuptDetector
+    private var lastGpsSpeed = 0.0
+    private var lastGpsAccuracy = 0f
+    private var lastGpsTime = 0L
 
     private val hysteresis = 1.0
     private val minBeepIntervalMs = 4000L
@@ -69,40 +79,51 @@ class SpeedService : Service() {
                 return
             }
             
-            // Более агрессивная фильтрация для быстрого отклика
-            val alpha = when {
-                acc <= 3   -> 0.9  // Отличная точность - почти полностью доверяем
-                acc <= 8   -> 0.8  // Хорошая точность
-                acc <= 15  -> 0.7  // Средняя точность
-                acc <= 20  -> 0.6  // Приемлемая точность
-                else       -> 0.4  // Минимальная точность
+            // Обновляем фильтр Калмана с GPS данными
+            val gpsSpeedMs = loc.speed.toDouble().coerceAtLeast(0.0) // скорость в м/с
+            val speedVariance = calculateSpeedVariance(acc, loc.time - lastGpsTime)
+            
+            speedKF.updateWithGps(gpsSpeedMs, speedVariance)
+            
+            // Обновляем курс для процессора сенсоров
+            if (loc.hasBearing()) {
+                sensorProcessor.updateBearingFromGps(loc.bearing.toDouble())
             }
             
-            val v = alpha * vRaw + (1 - alpha) * lastSpeed
-            lastSpeed = v
+            // Обновляем скорость для детектора остановки
+            sensorProcessor.updateSpeed(gpsSpeedMs)
+            
+            // Сохраняем GPS данные
+            lastGpsSpeed = vRaw
+            lastGpsAccuracy = acc
+            lastGpsTime = loc.time
+            
+            // Получаем скорость от фильтра Калмана
+            val currentSpeed = speedKF.getSpeedKmh()
+            lastSpeed = currentSpeed
 
             // Обновляем статические переменные
-            SpeedService.lastSpeed = v
+            SpeedService.lastSpeed = currentSpeed
             SpeedService.lastAccuracy = acc
 
-            // Обновляем уведомление
-            updateNotification("Скорость: %.1f км/ч (GPS ±${acc.toInt()}м)".format(Locale.getDefault(), v))
-            maybeAlert(v)
+            // Отправляем обновление скорости
+            sendSpeedUpdate(currentSpeed, acc, satellitesCount)
             
-            // Отправляем broadcast с обновленной скоростью
-            val intent = Intent(ACTION_SPEED_UPDATE).apply {
-                putExtra("speed", v)
-                putExtra("accuracy", acc)
-                putExtra("satellites", satellitesCount)
-                putExtra("searchTime", System.currentTimeMillis() - gpsSearchStartTime)
-                putExtra("provider", provider)
-                flags = Intent.FLAG_INCLUDE_STOPPED_PACKAGES
-                setPackage(packageName)
+            Log.d("SpeedService", "GPS update: raw=${vRaw}km/h, filtered=${currentSpeed}km/h, accuracy=${acc}m")
+        }
+
+        private fun calculateSpeedVariance(accuracy: Float, timeInterval: Long): Double {
+            // Базовая дисперсия на основе точности GPS
+            val baseVariance = (accuracy / 3.0) * (accuracy / 3.0) // примерная оценка
+            
+            // Увеличиваем дисперсию при больших интервалах между обновлениями
+            val timeFactor = if (timeInterval > 0) {
+                kotlin.math.min(timeInterval / 1000.0, 5.0) // максимум 5x
+            } else {
+                1.0
             }
-            sendBroadcast(intent)
             
-            // Отправляем статус GPS
-            sendGpsStatusUpdate("GPS активен (±${acc.toInt()}м)", true)
+            return baseVariance * timeFactor
         }
 
         @Deprecated("Deprecated in Android 30+, но нужен для совместимости с minSdk 24")
@@ -142,6 +163,7 @@ class SpeedService : Service() {
         isRunning = true
         nm = getSystemService(NotificationManager::class.java)
         lm = getSystemService(LocationManager::class.java)
+        sensorManager = getSystemService(SensorManager::class.java)
 
         val filter = IntentFilter(ACTION_SET_LIMIT)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -152,6 +174,9 @@ class SpeedService : Service() {
             registerReceiver(limitReceiver, filter)
         }
 
+        // Инициализируем фильтр Калмана и сенсоры
+        initializeKalmanFilter()
+        
         Log.d("SpeedService", "Запуск foreground сервиса")
         startForeground(NOTIF_ID, buildNotification("GPS готов"))
         gpsSearchStartTime = System.currentTimeMillis()
@@ -163,6 +188,73 @@ class SpeedService : Service() {
         startPeriodicStatusUpdates()
         
         requestLocation()
+    }
+
+    private fun initializeKalmanFilter() {
+        Log.d("SpeedService", "Инициализация фильтра Калмана")
+        
+        // Создаем фильтр Калмана
+        speedKF = SpeedKF()
+        
+        // Создаем детектор остановки
+        zuptDetector = ZuptDetector()
+        
+        // Создаем процессор сенсоров
+        sensorProcessor = SensorProcessor(sensorManager) { acceleration, dt ->
+            onAccelerationUpdate(acceleration, dt)
+        }
+        
+        // Запускаем сенсоры
+        sensorProcessor.start()
+        
+        Log.d("SpeedService", "Фильтр Калмана инициализирован")
+    }
+
+    private fun onAccelerationUpdate(acceleration: Double, dt: Double) {
+        if (!isRunning) return
+        
+        // Обновляем фильтр Калмана
+        speedKF.predict(acceleration, dt)
+        
+        // Получаем текущую скорость от фильтра
+        val currentSpeed = speedKF.getSpeedKmh()
+        
+        // Обновляем детектор остановки
+        val isStopped = zuptDetector.update(acceleration, currentSpeed / 3.6) // конвертируем в м/с
+        
+        // Если обнаружена остановка, применяем ZUPT
+        if (isStopped) {
+            speedKF.updateZeroVelocity()
+        }
+        
+        // Обновляем скорость в статических переменных
+        SpeedService.lastSpeed = currentSpeed
+        
+        // Отправляем обновление скорости
+        sendSpeedUpdate(currentSpeed, lastGpsAccuracy, satellitesCount)
+        
+        Log.d("SpeedService", "Acceleration update: ${acceleration}m/s², Speed: ${currentSpeed}km/h, Stopped: $isStopped")
+    }
+
+    private fun sendSpeedUpdate(speed: Double, accuracy: Float, satellites: Int) {
+        // Обновляем уведомление
+        updateNotification("Скорость: %.1f км/ч (GPS ±${accuracy.toInt()}м)".format(Locale.getDefault(), speed))
+        maybeAlert(speed)
+        
+        // Отправляем broadcast с обновленной скоростью
+        val intent = Intent(ACTION_SPEED_UPDATE).apply {
+            putExtra("speed", speed)
+            putExtra("accuracy", accuracy)
+            putExtra("satellites", satellites)
+            putExtra("searchTime", System.currentTimeMillis() - gpsSearchStartTime)
+            putExtra("provider", "gps")
+            flags = Intent.FLAG_INCLUDE_STOPPED_PACKAGES
+            setPackage(packageName)
+        }
+        sendBroadcast(intent)
+        
+        // Отправляем статус GPS
+        sendGpsStatusUpdate("GPS активен (±${accuracy.toInt()}м)", true)
     }
 
     private fun requestLocation() {
@@ -267,7 +359,9 @@ class SpeedService : Service() {
                 if (isRunning) {
                     val searchTime = (System.currentTimeMillis() - gpsSearchStartTime) / 1000
                     val currentStatus = if (lastLocationTime > 0) {
-                        "GPS активен (${(System.currentTimeMillis() - lastLocationTime) / 1000}с назад)"
+                        val kfSpeed = if (::speedKF.isInitialized) speedKF.getSpeedKmh() else 0.0
+                        val kfBias = if (::speedKF.isInitialized) speedKF.getBias() else 0.0
+                        "GPS+KF: ${String.format("%.1f", kfSpeed)}км/ч (bias: ${String.format("%.2f", kfBias)})"
                     } else {
                         "Поиск GPS сигнала... (${searchTime}с)"
                     }
@@ -277,6 +371,12 @@ class SpeedService : Service() {
                     if (lastLocationTime == 0L && searchTime > 10) {
                         Log.d("SpeedService", "Долго нет GPS, пробуем принудительное обновление")
                         tryGetLastKnownLocation()
+                    }
+                    
+                    // Логируем статистику фильтра Калмана
+                    if (::speedKF.isInitialized) {
+                        Log.d("SpeedService", "KF Stats: ${speedKF.getStats()}")
+                        Log.d("SpeedService", "ZUPT Stats: ${zuptDetector.getStats()}")
                     }
                     
                     statusUpdateHandler?.postDelayed(this, 2000) // Каждые 2 секунды
@@ -343,6 +443,14 @@ class SpeedService : Service() {
         Log.d("SpeedService", "onDestroy() вызван")
         isRunning = false
         stopPeriodicStatusUpdates()
+        
+        // Останавливаем сенсоры
+        try {
+            sensorProcessor.stop()
+        } catch (e: Exception) {
+            Log.e("SpeedService", "Ошибка остановки сенсоров", e)
+        }
+        
         try {
             unregisterReceiver(limitReceiver)
         } catch (_: Exception) { }
